@@ -138,8 +138,8 @@ function formatSignedDelta(delta, base) {
 }
 
 function colorByNarrative(text, narrative) {
-  if (narrative === "LONG") return `${ANSI.green}${text}${ANSI.reset}`;
-  if (narrative === "SHORT") return `${ANSI.red}${text}${ANSI.reset}`;
+  if (narrative === "LONG" || narrative === "看涨") return `${ANSI.green}${text}${ANSI.reset}`;
+  if (narrative === "SHORT" || narrative === "看跌") return `${ANSI.red}${text}${ANSI.reset}`;
   return `${ANSI.gray}${text}${ANSI.reset}`;
 }
 
@@ -148,21 +148,21 @@ function formatNarrativeValue(label, value, narrative) {
 }
 
 function narrativeFromSign(x) {
-  if (x === null || x === undefined || !Number.isFinite(Number(x)) || Number(x) === 0) return "NEUTRAL";
-  return Number(x) > 0 ? "LONG" : "SHORT";
+  if (x === null || x === undefined || !Number.isFinite(Number(x)) || Number(x) === 0) return "中性";
+  return Number(x) > 0 ? "看涨" : "看跌";
 }
 
 function narrativeFromRsi(rsi) {
-  if (rsi === null || rsi === undefined || !Number.isFinite(Number(rsi))) return "NEUTRAL";
+  if (rsi === null || rsi === undefined || !Number.isFinite(Number(rsi))) return "中性";
   const v = Number(rsi);
-  if (v >= 55) return "LONG";
-  if (v <= 45) return "SHORT";
-  return "NEUTRAL";
+  if (v >= 55) return "看涨";
+  if (v <= 45) return "看跌";
+  return "中性";
 }
 
 function narrativeFromSlope(slope) {
-  if (slope === null || slope === undefined || !Number.isFinite(Number(slope)) || Number(slope) === 0) return "NEUTRAL";
-  return Number(slope) > 0 ? "LONG" : "SHORT";
+  if (slope === null || slope === undefined || !Number.isFinite(Number(slope)) || Number(slope) === 0) return "中性";
+  return Number(slope) > 0 ? "看涨" : "看跌";
 }
 
 function formatProbPct(p, digits = 0) {
@@ -190,12 +190,12 @@ function getBtcSession(now = new Date()) {
   const inEurope = h >= 7 && h < 16;
   const inUs = h >= 13 && h < 22;
 
-  if (inEurope && inUs) return "Europe/US overlap";
-  if (inAsia && inEurope) return "Asia/Europe overlap";
-  if (inAsia) return "Asia";
-  if (inEurope) return "Europe";
-  if (inUs) return "US";
-  return "Off-hours";
+  if (inEurope && inUs) return "欧洲/美国重叠";
+  if (inAsia && inEurope) return "亚洲/欧洲重叠";
+  if (inAsia) return "亚洲";
+  if (inEurope) return "欧洲";
+  if (inUs) return "美国";
+  return "休市";
 }
 
 function parsePriceToBeat(market) {
@@ -514,13 +514,13 @@ async function main() {
 
       const rec = decide({ remainingMinutes: timeLeftMin, edgeUp: edge.edgeUp, edgeDown: edge.edgeDown, modelUp: timeAware.adjustedUp, modelDown: timeAware.adjustedDown });
 
-      const vwapSlopeLabel = vwapSlope === null ? "-" : vwapSlope > 0 ? "UP" : vwapSlope < 0 ? "DOWN" : "FLAT";
+      const vwapSlopeLabel = vwapSlope === null ? "-" : vwapSlope > 0 ? "上升" : vwapSlope < 0 ? "下降" : "持平";
 
       const macdLabel = macd === null
         ? "-"
         : macd.hist < 0
-          ? (macd.histDelta !== null && macd.histDelta < 0 ? "bearish (expanding)" : "bearish")
-          : (macd.histDelta !== null && macd.histDelta > 0 ? "bullish (expanding)" : "bullish");
+          ? (macd.histDelta !== null && macd.histDelta < 0 ? "看跌 (扩大)" : "看跌")
+          : (macd.histDelta !== null && macd.histDelta > 0 ? "看涨 (扩大)" : "看涨");
 
       const lastCandle = klines1m.length ? klines1m[klines1m.length - 1] : null;
       const lastClose = lastCandle?.close ?? null;
@@ -529,7 +529,7 @@ async function main() {
       const delta1m = lastClose !== null && close1mAgo !== null ? lastClose - close1mAgo : null;
       const delta3m = lastClose !== null && close3mAgo !== null ? lastClose - close3mAgo : null;
 
-      const haNarrative = (consec.color ?? "").toLowerCase() === "green" ? "LONG" : (consec.color ?? "").toLowerCase() === "red" ? "SHORT" : "NEUTRAL";
+      const haNarrative = (consec.color ?? "").toLowerCase() === "green" ? "看涨" : (consec.color ?? "").toLowerCase() === "red" ? "看跌" : "中性";
       const rsiNarrative = narrativeFromSlope(rsiSlope);
       const macdNarrative = narrativeFromSign(macd?.hist ?? null);
       const vwapNarrative = narrativeFromSign(vwapDist);
@@ -537,17 +537,17 @@ async function main() {
       const pLong = timeAware?.adjustedUp ?? null;
       const pShort = timeAware?.adjustedDown ?? null;
       const predictNarrative = (pLong !== null && pShort !== null && Number.isFinite(pLong) && Number.isFinite(pShort))
-        ? (pLong > pShort ? "LONG" : pShort > pLong ? "SHORT" : "NEUTRAL")
-        : "NEUTRAL";
-      const predictValue = `${ANSI.green}LONG${ANSI.reset} ${ANSI.green}${formatProbPct(pLong, 0)}${ANSI.reset} / ${ANSI.red}SHORT${ANSI.reset} ${ANSI.red}${formatProbPct(pShort, 0)}${ANSI.reset}`;
-      const predictLine = `Predict: ${predictValue}`;
+        ? (pLong > pShort ? "看涨" : pShort > pLong ? "看跌" : "中性")
+        : "中性";
+      const predictValue = `${ANSI.green}看涨${ANSI.reset} ${ANSI.green}${formatProbPct(pLong, 0)}${ANSI.reset} / ${ANSI.red}看跌${ANSI.reset} ${ANSI.red}${formatProbPct(pShort, 0)}${ANSI.reset}`;
+      const predictLine = `预测: ${predictValue}`;
 
       const marketUpStr = `${marketUp ?? "-"}${marketUp === null || marketUp === undefined ? "" : "¢"}`;
       const marketDownStr = `${marketDown ?? "-"}${marketDown === null || marketDown === undefined ? "" : "¢"}`;
-      const polyHeaderValue = `${ANSI.green}↑ UP${ANSI.reset} ${marketUpStr}  |  ${ANSI.red}↓ DOWN${ANSI.reset} ${marketDownStr}`;
+      const polyHeaderValue = `${ANSI.green}↑ 上涨${ANSI.reset} ${marketUpStr}  |  ${ANSI.red}↓ 下跌${ANSI.reset} ${marketDownStr}`;
 
       const heikenValue = `${consec.color ?? "-"} x${consec.count}`;
-      const heikenLine = formatNarrativeValue("Heiken Ashi", heikenValue, haNarrative);
+      const heikenLine = formatNarrativeValue("平均K线", heikenValue, haNarrative);
 
       const rsiArrow = rsiSlope !== null && rsiSlope < 0 ? "↓" : rsiSlope !== null && rsiSlope > 0 ? "↑" : "-";
       const rsiValue = `${formatNumber(rsiNow, 1)} ${rsiArrow}`;
@@ -558,16 +558,16 @@ async function main() {
       const delta1Narrative = narrativeFromSign(delta1m);
       const delta3Narrative = narrativeFromSign(delta3m);
       const deltaValue = `${colorByNarrative(formatSignedDelta(delta1m, lastClose), delta1Narrative)} | ${colorByNarrative(formatSignedDelta(delta3m, lastClose), delta3Narrative)}`;
-      const deltaLine = `Delta 1/3Min: ${deltaValue}`;
+      const deltaLine = `1/3分钟变化: ${deltaValue}`;
 
-      const vwapValue = `${formatNumber(vwapNow, 0)} (${formatPct(vwapDist, 2)}) | slope: ${vwapSlopeLabel}`;
-      const vwapLine = formatNarrativeValue("VWAP", vwapValue, vwapNarrative);
+      const vwapValue = `${formatNumber(vwapNow, 0)} (${formatPct(vwapDist, 2)}) | 斜率: ${vwapSlopeLabel}`;
+      const vwapLine = formatNarrativeValue("成交量加权平均价", vwapValue, vwapNarrative);
 
-      const signal = rec.action === "ENTER" ? (rec.side === "UP" ? "BUY UP" : "BUY DOWN") : "NO TRADE";
+      const signal = rec.action === "ENTER" ? (rec.side === "UP" ? "买入上涨" : "买入下跌") : "不交易";
 
       const actionLine = rec.action === "ENTER"
-        ? `${rec.action} NOW (${rec.phase} ENTRY)`
-        : `NO TRADE (${rec.phase})`;
+        ? `立即入场 (${rec.phase} 入场)`
+        : `不交易 (${rec.phase})`;
 
       const spreadUp = poly.ok ? poly.orderbook.up.spread : null;
       const spreadDown = poly.ok ? poly.orderbook.down.spread : null;
@@ -596,7 +596,7 @@ async function main() {
 
       const priceToBeat = priceToBeatState.slug === marketSlug ? priceToBeatState.value : null;
       const currentPriceBaseLine = colorPriceLine({
-        label: "CURRENT PRICE",
+        label: "当前价格",
         price: currentPrice,
         prevPrice: prevCurrentPrice,
         decimals: 2,
@@ -617,7 +617,7 @@ async function main() {
         ? `${ANSI.gray}-${ANSI.reset}`
         : `${ptbDeltaColor}${ptbDelta > 0 ? "+" : ptbDelta < 0 ? "-" : ""}$${Math.abs(ptbDelta).toFixed(2)}${ANSI.reset}`;
       const currentPriceValue = currentPriceBaseLine.split(": ")[1] ?? currentPriceBaseLine;
-      const currentPriceLine = kv("CURRENT PRICE:", `${currentPriceValue} (${ptbDeltaText})`);
+      const currentPriceLine = kv("当前价格:", `${currentPriceValue} (${ptbDeltaText})`);
 
       if (poly.ok && poly.market && priceToBeatState.value === null) {
         const slug = safeFileSlug(poly.market.slug || poly.market.id || "market");
@@ -632,7 +632,7 @@ async function main() {
         }
       }
 
-      const binanceSpotBaseLine = colorPriceLine({ label: "BTC (Binance)", price: spotPrice, prevPrice: prevSpotPrice, decimals: 0, prefix: "$" });
+      const binanceSpotBaseLine = colorPriceLine({ label: "BTC (币安)", price: spotPrice, prevPrice: prevSpotPrice, decimals: 0, prefix: "$" });
       const diffLine = (spotPrice !== null && currentPrice !== null && Number.isFinite(spotPrice) && Number.isFinite(currentPrice) && currentPrice !== 0)
         ? (() => {
           const diffUsd = spotPrice - currentPrice;
@@ -643,10 +643,10 @@ async function main() {
         : "";
       const binanceSpotLine = `${binanceSpotBaseLine}${diffLine}`;
       const binanceSpotValue = binanceSpotLine.split(": ")[1] ?? binanceSpotLine;
-      const binanceSpotKvLine = kv("BTC (Binance):", binanceSpotValue);
+      const binanceSpotKvLine = kv("BTC (币安):", binanceSpotValue);
 
       const titleLine = poly.ok ? `${poly.market?.question ?? "-"}` : "-";
-      const marketLine = kv("Market:", poly.ok ? (poly.market?.slug ?? "-") : "-");
+      const marketLine = kv("市场:", poly.ok ? (poly.market?.slug ?? "-") : "-");
 
       const timeColor = timeLeftMin >= 10 && timeLeftMin <= 15
         ? ANSI.green
@@ -655,7 +655,7 @@ async function main() {
           : timeLeftMin >= 0 && timeLeftMin < 5
             ? ANSI.red
             : ANSI.reset;
-      const timeLeftLine = `⏱ Time left: ${timeColor}${fmtTimeLeft(timeLeftMin)}${ANSI.reset}`;
+      const timeLeftLine = `⏱ 剩余时间: ${timeColor}${fmtTimeLeft(timeLeftMin)}${ANSI.reset}`;
 
       const polyTimeLeftColor = settlementLeftMin !== null
         ? (settlementLeftMin >= 10 && settlementLeftMin <= 15
@@ -670,23 +670,23 @@ async function main() {
       const lines = [
         titleLine,
         marketLine,
-        kv("Time left:", `${timeColor}${fmtTimeLeft(timeLeftMin)}${ANSI.reset}`),
+        kv("剩余时间:", `${timeColor}${fmtTimeLeft(timeLeftMin)}${ANSI.reset}`),
         "",
         sepLine(),
         "",
-        kv("TA Predict:", predictValue),
-        kv("Heiken Ashi:", heikenLine.split(": ")[1] ?? heikenLine),
+        kv("技术分析预测:", predictValue),
+        kv("平均K线:", heikenLine.split(": ")[1] ?? heikenLine),
         kv("RSI:", rsiLine.split(": ")[1] ?? rsiLine),
         kv("MACD:", macdLine.split(": ")[1] ?? macdLine),
-        kv("Delta 1/3:", deltaLine.split(": ")[1] ?? deltaLine),
-        kv("VWAP:", vwapLine.split(": ")[1] ?? vwapLine),
+        kv("1/3分钟变化:", deltaLine.split(": ")[1] ?? deltaLine),
+        kv("成交量加权平均价:", vwapLine.split(": ")[1] ?? vwapLine),
         "",
         sepLine(),
         "",
-        kv("POLYMARKET:", polyHeaderValue),
-        liquidity !== null ? kv("Liquidity:", formatNumber(liquidity, 0)) : null,
-        settlementLeftMin !== null ? kv("Time left:", `${polyTimeLeftColor}${fmtTimeLeft(settlementLeftMin)}${ANSI.reset}`) : null,
-        priceToBeat !== null ? kv("PRICE TO BEAT: ", `$${formatNumber(priceToBeat, 0)}`) : kv("PRICE TO BEAT: ", `${ANSI.gray}-${ANSI.reset}`),
+        kv("Polymarket:", polyHeaderValue),
+        liquidity !== null ? kv("流动性:", formatNumber(liquidity, 0)) : null,
+        settlementLeftMin !== null ? kv("剩余时间:", `${polyTimeLeftColor}${fmtTimeLeft(settlementLeftMin)}${ANSI.reset}`) : null,
+        priceToBeat !== null ? kv("目标价格: ", `$${formatNumber(priceToBeat, 0)}`) : kv("目标价格: ", `${ANSI.gray}-${ANSI.reset}`),
         currentPriceLine,
         "",
         sepLine(),
@@ -695,10 +695,10 @@ async function main() {
         "",
         sepLine(),
         "",
-        kv("ET | Session:", `${ANSI.white}${fmtEtTime(new Date())}${ANSI.reset} | ${ANSI.white}${getBtcSession(new Date())}${ANSI.reset}`),
+        kv("美东时间 | 交易时段:", `${ANSI.white}${fmtEtTime(new Date())}${ANSI.reset} | ${ANSI.white}${getBtcSession(new Date())}${ANSI.reset}`),
         "",
         sepLine(),
-        centerText(`${ANSI.dim}${ANSI.gray}created by @krajekis${ANSI.reset}`, screenWidth())
+        centerText(`${ANSI.dim}${ANSI.gray}由 @krajekis 创建${ANSI.reset}`, screenWidth())
       ].filter((x) => x !== null);
 
       renderScreen(lines.join("\n") + "\n");
@@ -722,7 +722,7 @@ async function main() {
       ]);
     } catch (err) {
       console.log("────────────────────────────");
-      console.log(`Error: ${err?.message ?? String(err)}`);
+      console.log(`错误: ${err?.message ?? String(err)}`);
       console.log("────────────────────────────");
     }
 
