@@ -55,7 +55,12 @@ const ANSI = {
   lightRed: "\x1b[91m",
   gray: "\x1b[90m",
   white: "\x1b[97m",
-  dim: "\x1b[2m"
+  dim: "\x1b[2m",
+  bright: "\x1b[1m",
+  blink: "\x1b[5m",
+  bgRed: "\x1b[41m",
+  bgGreen: "\x1b[42m",
+  bgYellow: "\x1b[43m"
 };
 
 function screenWidth() {
@@ -65,7 +70,8 @@ function screenWidth() {
 
 function sepLine(ch = "─") {
   const w = screenWidth();
-  return `${ANSI.white}${ch.repeat(w)}${ANSI.reset}`;
+  const char = String(ch).length > 0 ? ch : "─";
+  return `${ANSI.white}${char.repeat(w)}${ANSI.reset}`;
 }
 
 function renderScreen(text) {
@@ -569,19 +575,13 @@ async function main() {
         ? `立即入场 (${rec.phase} 入场)`
         : `不交易 (${rec.phase})`;
 
-      const spreadUp = poly.ok ? poly.orderbook.up.spread : null;
-      const spreadDown = poly.ok ? poly.orderbook.down.spread : null;
-
-      const spread = spreadUp !== null && spreadDown !== null ? Math.max(spreadUp, spreadDown) : (spreadUp ?? spreadDown);
-      const liquidity = poly.ok
-        ? (Number(poly.market?.liquidityNum) || Number(poly.market?.liquidity) || null)
-        : null;
-
+      // 先定义基础变量
       const spotPrice = wsPrice ?? lastPrice;
       const currentPrice = chainlink?.price ?? null;
       const marketSlug = poly.ok ? String(poly.market?.slug ?? "") : "";
       const marketStartMs = poly.ok && poly.market?.eventStartTime ? new Date(poly.market.eventStartTime).getTime() : null;
 
+      // 处理 priceToBeatState
       if (marketSlug && priceToBeatState.slug !== marketSlug) {
         priceToBeatState = { slug: marketSlug, value: null, setAtMs: null };
       }
@@ -595,6 +595,68 @@ async function main() {
       }
 
       const priceToBeat = priceToBeatState.slug === marketSlug ? priceToBeatState.value : null;
+
+      // 定义流动性相关变量
+      const spreadUp = poly.ok ? poly.orderbook.up.spread : null;
+      const spreadDown = poly.ok ? poly.orderbook.down.spread : null;
+      const spread = spreadUp !== null && spreadDown !== null ? Math.max(spreadUp, spreadDown) : (spreadUp ?? spreadDown);
+      const liquidity = poly.ok
+        ? (Number(poly.market?.liquidityNum) || Number(poly.market?.liquidity) || null)
+        : null;
+
+      // 检查价格差距是否合理
+      const priceGapPct = (currentPrice !== null && priceToBeat !== null && Number.isFinite(currentPrice) && Number.isFinite(priceToBeat) && priceToBeat !== 0)
+        ? Math.abs((currentPrice - priceToBeat) / priceToBeat) * 100
+        : null;
+      
+      const maxGapPct = timeLeftMin > 10 ? 0.2 : timeLeftMin > 5 ? 0.15 : 0.1;
+      const priceGapOk = priceGapPct === null ? true : priceGapPct <= maxGapPct;
+
+      // 统计技术指标支持数量
+      let bullishSignals = 0;
+      let bearishSignals = 0;
+      
+      if (lastPrice !== null && vwapNow !== null) {
+        if (lastPrice > vwapNow) bullishSignals += 1;
+        if (lastPrice < vwapNow) bearishSignals += 1;
+      }
+      if (vwapSlope !== null) {
+        if (vwapSlope > 0) bullishSignals += 1;
+        if (vwapSlope < 0) bearishSignals += 1;
+      }
+      if (rsiNow !== null && rsiSlope !== null) {
+        if (rsiNow > 55 && rsiSlope > 0) bullishSignals += 1;
+        if (rsiNow < 45 && rsiSlope < 0) bearishSignals += 1;
+      }
+      if (macd?.hist !== null && macd?.histDelta !== null) {
+        if (macd.hist > 0 && macd.histDelta > 0) bullishSignals += 1;
+        if (macd.hist < 0 && macd.histDelta < 0) bearishSignals += 1;
+      }
+      if (consec.color) {
+        if (consec.color === "green" && consec.count >= 2) bullishSignals += 1;
+        if (consec.color === "red" && consec.count >= 2) bearishSignals += 1;
+      }
+      if (delta1m !== null && delta3m !== null) {
+        if (delta1m > 0 && delta3m > 0) bullishSignals += 1;
+        if (delta1m < 0 && delta3m < 0) bearishSignals += 1;
+      }
+      if (failedVwapReclaim) bearishSignals += 3; // 强烈信号
+
+      const minSignals = 3;
+      const signalsOk = rec.side === "UP" 
+        ? bullishSignals >= minSignals 
+        : rec.side === "DOWN" 
+          ? bearishSignals >= minSignals 
+          : false;
+
+      // 检查流动性
+      const liquidityOk = liquidity !== null && liquidity >= 1000;
+
+      // 检查市场状态
+      const regimeOk = regimeInfo.regime !== "CHOP";
+
+      // 最终判断：是否应该下注
+      const shouldBet = rec.action === "ENTER" && priceGapOk && signalsOk && liquidityOk && regimeOk;
       const currentPriceBaseLine = colorPriceLine({
         label: "当前价格",
         price: currentPrice,
@@ -667,7 +729,62 @@ async function main() {
               : ANSI.reset)
         : ANSI.reset;
 
+      // 生成醒目的下注提示
+      let betAlert = null;
+      if (shouldBet) {
+        const sideText = rec.side === "UP" ? "上涨" : "下跌";
+        const sideColor = rec.side === "UP" ? ANSI.green : ANSI.red;
+        const bgColor = rec.side === "UP" ? ANSI.bgGreen : ANSI.bgRed;
+        const edgeValue = rec.side === "UP" ? edge.edgeUp : edge.edgeDown;
+        const edgePct = edgeValue !== null ? (edgeValue * 100).toFixed(1) : "0";
+        const strengthText = rec.strength === "STRONG" ? "强烈" : rec.strength === "GOOD" ? "良好" : "可选";
+        
+        const alertLines = [
+          "",
+          sepLine("="),
+          "",
+          centerText(`${ANSI.bright}${ANSI.blink}${bgColor}${ANSI.white} ⚠️  下注信号  ⚠️ ${ANSI.reset}`, screenWidth()),
+          "",
+          centerText(`${sideColor}${ANSI.bright}方向: 买入${sideText}${ANSI.reset}`, screenWidth()),
+          centerText(`${ANSI.white}边缘: ${edgePct}% | 强度: ${strengthText} | 阶段: ${rec.phase}${ANSI.reset}`, screenWidth()),
+          centerText(`${ANSI.white}模型预测: ${formatProbPct(rec.side === "UP" ? timeAware.adjustedUp : timeAware.adjustedDown, 1)}${ANSI.reset}`, screenWidth()),
+          centerText(`${ANSI.white}市场定价: ${formatProbPct(rec.side === "UP" ? edge.marketUp : edge.marketDown, 1)}${ANSI.reset}`, screenWidth()),
+          centerText(`${ANSI.white}技术指标支持: ${rec.side === "UP" ? bullishSignals : bearishSignals}个${ANSI.reset}`, screenWidth()),
+          priceGapPct !== null ? centerText(`${ANSI.white}价格差距: ${priceGapPct.toFixed(2)}%${ANSI.reset}`, screenWidth()) : null,
+          "",
+          centerText(`${ANSI.bright}${sideColor}═══════════════════════════════════════${ANSI.reset}`, screenWidth()),
+          centerText(`${ANSI.bright}${sideColor}  立即在Polymarket买入"${sideText}"  ${ANSI.reset}`, screenWidth()),
+          centerText(`${ANSI.bright}${sideColor}═══════════════════════════════════════${ANSI.reset}`, screenWidth()),
+          "",
+          sepLine("="),
+          ""
+        ].filter((x) => x !== null);
+        
+        betAlert = alertLines.join("\n");
+      } else if (rec.action === "ENTER" && !shouldBet) {
+        // 系统建议下注，但不满足所有条件
+        const reasons = [];
+        if (!priceGapOk) reasons.push("价格差距过大");
+        if (!signalsOk) reasons.push("技术指标支持不足");
+        if (!liquidityOk) reasons.push("流动性不足");
+        if (!regimeOk) reasons.push("市场横盘");
+        
+        betAlert = [
+          "",
+          sepLine("-"),
+          "",
+          centerText(`${ANSI.yellow}${ANSI.bright}⚠️  系统建议下注，但存在风险 ⚠️${ANSI.reset}`, screenWidth()),
+          centerText(`${ANSI.yellow}方向: ${rec.side === "UP" ? "买入上涨" : "买入下跌"}${ANSI.reset}`, screenWidth()),
+          centerText(`${ANSI.yellow}风险因素: ${reasons.join(", ")}${ANSI.reset}`, screenWidth()),
+          centerText(`${ANSI.yellow}建议: 谨慎考虑或等待更好时机${ANSI.reset}`, screenWidth()),
+          "",
+          sepLine("-"),
+          ""
+        ].join("\n");
+      }
+
       const lines = [
+        betAlert, // 下注提示放在最前面
         titleLine,
         marketLine,
         kv("剩余时间:", `${timeColor}${fmtTimeLeft(timeLeftMin)}${ANSI.reset}`),
@@ -688,6 +805,10 @@ async function main() {
         settlementLeftMin !== null ? kv("剩余时间:", `${polyTimeLeftColor}${fmtTimeLeft(settlementLeftMin)}${ANSI.reset}`) : null,
         priceToBeat !== null ? kv("目标价格: ", `$${formatNumber(priceToBeat, 0)}`) : kv("目标价格: ", `${ANSI.gray}-${ANSI.reset}`),
         currentPriceLine,
+        priceGapPct !== null ? kv("价格差距:", `${priceGapPct.toFixed(3)}% ${priceGapOk ? ANSI.green + "✓" + ANSI.reset : ANSI.red + "✗" + ANSI.reset}`) : null,
+        kv("技术指标支持:", `看涨${bullishSignals}个 / 看跌${bearishSignals}个 ${signalsOk ? ANSI.green + "✓" + ANSI.reset : ANSI.yellow + "⚠" + ANSI.reset}`),
+        kv("边缘(上涨/下跌):", `${edge.edgeUp !== null ? (edge.edgeUp * 100).toFixed(1) + "%" : "-"} / ${edge.edgeDown !== null ? (edge.edgeDown * 100).toFixed(1) + "%" : "-"}`),
+        kv("市场状态:", `${regimeInfo.regime} ${regimeOk ? ANSI.green + "✓" + ANSI.reset : ANSI.yellow + "⚠" + ANSI.reset}`),
         "",
         sepLine(),
         "",
