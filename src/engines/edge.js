@@ -31,13 +31,36 @@ export function decide({ remainingMinutes, edgeUp, edgeDown, modelUp = null, mod
     return { action: "NO_TRADE", side: null, phase, reason: "missing_market_data" };
   }
 
+  // 修复：只有当边缘为正且大于阈值时才考虑该方向
+  // 如果两个方向的边缘都小于阈值，则不交易
+  const upValid = edgeUp >= threshold;
+  const downValid = edgeDown >= threshold;
+
+  if (!upValid && !downValid) {
+    return { action: "NO_TRADE", side: null, phase, reason: `both_edges_below_${threshold}` };
+  }
+
+  // 如果只有一个方向有效，选择那个方向
+  if (upValid && !downValid) {
+    if (modelUp !== null && modelUp < minProb) {
+      return { action: "NO_TRADE", side: null, phase, reason: `prob_below_${minProb}` };
+    }
+    const strength = edgeUp >= 0.2 ? "STRONG" : edgeUp >= 0.1 ? "GOOD" : "OPTIONAL";
+    return { action: "ENTER", side: "UP", phase, strength, edge: edgeUp };
+  }
+
+  if (downValid && !upValid) {
+    if (modelDown !== null && modelDown < minProb) {
+      return { action: "NO_TRADE", side: null, phase, reason: `prob_below_${minProb}` };
+    }
+    const strength = edgeDown >= 0.2 ? "STRONG" : edgeDown >= 0.1 ? "GOOD" : "OPTIONAL";
+    return { action: "ENTER", side: "DOWN", phase, strength, edge: edgeDown };
+  }
+
+  // 如果两个方向都有效，选择边缘更大的
   const bestSide = edgeUp > edgeDown ? "UP" : "DOWN";
   const bestEdge = bestSide === "UP" ? edgeUp : edgeDown;
   const bestModel = bestSide === "UP" ? modelUp : modelDown;
-
-  if (bestEdge < threshold) {
-    return { action: "NO_TRADE", side: null, phase, reason: `edge_below_${threshold}` };
-  }
 
   if (bestModel !== null && bestModel < minProb) {
     return { action: "NO_TRADE", side: null, phase, reason: `prob_below_${minProb}` };
