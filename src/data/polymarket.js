@@ -51,7 +51,7 @@ export async function fetchLiveEventsBySeriesId({ seriesId, limit = 20 }) {
   url.searchParams.set("closed", "false");
   url.searchParams.set("limit", String(limit));
 
-  console.log(`[Polymarket API] 请求URL: ${url.toString()}`);
+  // console.log(`[Polymarket API] 请求URL: ${url.toString()}`);
 
   const res = await fetch(url);
   if (!res.ok) {
@@ -62,7 +62,7 @@ export async function fetchLiveEventsBySeriesId({ seriesId, limit = 20 }) {
 
   const data = await res.json();
   const events = Array.isArray(data) ? data : [];
-  console.log(`[Polymarket API] 返回 ${events.length} 个事件`);
+  // console.log(`[Polymarket API] 返回 ${events.length} 个事件`);
   return events;
 }
 
