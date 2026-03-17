@@ -6,6 +6,7 @@ import { startPolymarketChainlinkPriceStream } from "./data/polymarketLiveWs.js"
 import {
   fetchMarketBySlug,
   fetchLiveEventsBySeriesId,
+  fetchMarketsBySeriesSlug,
   flattenEventMarkets,
   pickLatestLiveMarket,
   fetchClobPrice,
@@ -287,7 +288,7 @@ const marketCache = {
   fetchedAtMs: 0
 };
 
-async function resolveCurrentBtc15mMarket() {
+async function resolveCurrentBtc5mMarket() {
   if (CONFIG.polymarket.marketSlug) {
     return await fetchMarketBySlug(CONFIG.polymarket.marketSlug);
   }
@@ -299,9 +300,16 @@ async function resolveCurrentBtc15mMarket() {
     return marketCache.market;
   }
 
+  // 优先使用 seriesSlug 来筛选5分钟市场
   const events = await fetchLiveEventsBySeriesId({ seriesId: CONFIG.polymarket.seriesId, limit: 25 });
   const markets = flattenEventMarkets(events);
   const picked = pickLatestLiveMarket(markets);
+  // if (picked) {
+  //   console.log(`[Polymarket] 选择的市场: ${picked.slug} - ${picked.question || picked.title}`);
+  //   console.log(`[Polymarket] 市场URL: https://polymarket.com/event/${picked.slug}`);
+  // } else {
+  //   console.log(`[Polymarket] 未找到可用市场`);
+  // }
 
   marketCache.market = picked;
   marketCache.fetchedAtMs = now;
@@ -309,9 +317,15 @@ async function resolveCurrentBtc15mMarket() {
 }
 
 async function fetchPolymarketSnapshot() {
-  const market = await resolveCurrentBtc15mMarket();
+  const market = await resolveCurrentBtc5mMarket();
 
-  if (!market) return { ok: false, reason: "market_not_found" };
+  if (!market) {
+    console.error("[Polymarket] Market not found. Check seriesSlug:", CONFIG.polymarket.seriesSlug, "seriesId:", CONFIG.polymarket.seriesId);
+    return { ok: false, reason: "market_not_found" };
+  }
+
+  // console.log(`[Polymarket] 获取市场快照: ${market.slug}`);
+  // console.log(`[Polymarket] 市场URL: https://polymarket.com/event/${market.slug}`);
 
   const outcomes = Array.isArray(market.outcomes) ? market.outcomes : (typeof market.outcomes === "string" ? JSON.parse(market.outcomes) : []);
   const outcomePrices = Array.isArray(market.outcomePrices)
@@ -321,6 +335,10 @@ async function fetchPolymarketSnapshot() {
   const clobTokenIds = Array.isArray(market.clobTokenIds)
     ? market.clobTokenIds
     : (typeof market.clobTokenIds === "string" ? JSON.parse(market.clobTokenIds) : []);
+
+  // 尝试从不同字段获取价格（兼容不同的API响应格式）
+  const priceField = market.price || market.currentPrice || market.estimatedPrice;
+  const pricesFromField = priceField ? (Array.isArray(priceField) ? priceField : [priceField]) : null;
 
   let upTokenId = null;
   let downTokenId = null;
@@ -336,17 +354,41 @@ async function fetchPolymarketSnapshot() {
   const upIndex = outcomes.findIndex((x) => String(x).toLowerCase() === CONFIG.polymarket.upOutcomeLabel.toLowerCase());
   const downIndex = outcomes.findIndex((x) => String(x).toLowerCase() === CONFIG.polymarket.downOutcomeLabel.toLowerCase());
 
-  const gammaYes = upIndex >= 0 ? Number(outcomePrices[upIndex]) : null;
-  const gammaNo = downIndex >= 0 ? Number(outcomePrices[downIndex]) : null;
+  // 优先使用outcomePrices，如果没有则尝试其他字段
+  let gammaYes = upIndex >= 0 && outcomePrices[upIndex] !== undefined ? Number(outcomePrices[upIndex]) : null;
+  let gammaNo = downIndex >= 0 && outcomePrices[downIndex] !== undefined ? Number(outcomePrices[downIndex]) : null;
+  
+  // 如果outcomePrices无效，尝试从其他字段获取
+  if ((gammaYes === null || isNaN(gammaYes)) && pricesFromField && upIndex >= 0) {
+    gammaYes = Number(pricesFromField[upIndex]) || null;
+  }
+  if ((gammaNo === null || isNaN(gammaNo)) && pricesFromField && downIndex >= 0) {
+    gammaNo = Number(pricesFromField[downIndex]) || null;
+  }
+  
+  // 如果还是无效，尝试从market的直接字段获取
+  if ((gammaYes === null || isNaN(gammaYes)) && market.yesPrice !== undefined) {
+    gammaYes = Number(market.yesPrice) || null;
+  }
+  if ((gammaNo === null || isNaN(gammaNo)) && market.noPrice !== undefined) {
+    gammaNo = Number(market.noPrice) || null;
+  }
 
   if (!upTokenId || !downTokenId) {
+    console.error("[Polymarket] Missing token IDs. Outcomes:", outcomes, "TokenIds:", clobTokenIds, "UpLabel:", CONFIG.polymarket.upOutcomeLabel, "DownLabel:", CONFIG.polymarket.downOutcomeLabel);
+    // 即使没有tokenId，也尝试返回gamma价格
     return {
-      ok: false,
-      reason: "missing_token_ids",
+      ok: true,
       market,
-      outcomes,
-      clobTokenIds,
-      outcomePrices
+      tokens: { upTokenId, downTokenId },
+      prices: {
+        up: gammaYes,
+        down: gammaNo
+      },
+      orderbook: {
+        up: { bestBid: null, bestAsk: null, spread: null, bidLiquidity: null, askLiquidity: null },
+        down: { bestBid: null, bestAsk: null, spread: null, bidLiquidity: null, askLiquidity: null }
+      }
     };
   }
 
@@ -367,7 +409,8 @@ async function fetchPolymarketSnapshot() {
     downBuy = noBuy;
     upBookSummary = summarizeOrderBook(upBook);
     downBookSummary = summarizeOrderBook(downBook);
-  } catch {
+  } catch (err) {
+    console.error("[Polymarket] CLOB fetch error:", err?.message || String(err));
     upBuy = null;
     downBuy = null;
     upBookSummary = {
@@ -455,7 +498,9 @@ async function main() {
       const settlementMs = poly.ok && poly.market?.endDate ? new Date(poly.market.endDate).getTime() : null;
       const settlementLeftMin = settlementMs ? (settlementMs - Date.now()) / 60_000 : null;
 
-      const timeLeftMin = settlementLeftMin ?? timing.remainingMinutes;
+      // 优先使用蜡烛窗口时间，只有在市场结算时间更接近时才使用市场时间
+      // 这样可以确保显示的是5分钟窗口时间，而不是15分钟市场的时间
+      const timeLeftMin = timing.remainingMinutes;
 
       const candles = klines1m;
       const closes = candles.map((c) => c.close);
@@ -609,7 +654,7 @@ async function main() {
         ? Math.abs((currentPrice - priceToBeat) / priceToBeat) * 100
         : null;
       
-      const maxGapPct = timeLeftMin > 10 ? 0.2 : timeLeftMin > 5 ? 0.15 : 0.1;
+      const maxGapPct = timeLeftMin > 3 ? 0.15 : timeLeftMin > 2 ? 0.1 : 0.05;
       const priceGapOk = priceGapPct === null ? true : priceGapPct <= maxGapPct;
 
       // 统计技术指标支持数量
@@ -710,21 +755,21 @@ async function main() {
       const titleLine = poly.ok ? `${poly.market?.question ?? "-"}` : "-";
       const marketLine = kv("市场:", poly.ok ? (poly.market?.slug ?? "-") : "-");
 
-      const timeColor = timeLeftMin >= 10 && timeLeftMin <= 15
+      const timeColor = timeLeftMin >= 3 && timeLeftMin <= 5
         ? ANSI.green
-        : timeLeftMin >= 5 && timeLeftMin < 10
+        : timeLeftMin >= 2 && timeLeftMin < 3
           ? ANSI.yellow
-          : timeLeftMin >= 0 && timeLeftMin < 5
+          : timeLeftMin >= 0 && timeLeftMin < 2
             ? ANSI.red
             : ANSI.reset;
       const timeLeftLine = `⏱ 剩余时间: ${timeColor}${fmtTimeLeft(timeLeftMin)}${ANSI.reset}`;
 
       const polyTimeLeftColor = settlementLeftMin !== null
-        ? (settlementLeftMin >= 10 && settlementLeftMin <= 15
+        ? (settlementLeftMin >= 3 && settlementLeftMin <= 5
           ? ANSI.green
-          : settlementLeftMin >= 5 && settlementLeftMin < 10
+          : settlementLeftMin >= 2 && settlementLeftMin < 3
             ? ANSI.yellow
-            : settlementLeftMin >= 0 && settlementLeftMin < 5
+            : settlementLeftMin >= 0 && settlementLeftMin < 2
               ? ANSI.red
               : ANSI.reset)
         : ANSI.reset;
